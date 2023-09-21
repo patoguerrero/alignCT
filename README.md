@@ -1,8 +1,8 @@
 # alignCT
-python codes of the paper 'Automatic alignment in cone-beam tomography via fan-beam symmetry and variable projection'.
+python codes of the paper 'Automatic alignment in cone-beam tomography via fan-beam symmetry and variable projection'.  
 Patricio Guerrero
 
-needs:
+needs:  
 numpy, scipy, skimage, astra, matplotlib, time
 
 
