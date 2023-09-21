@@ -18,15 +18,19 @@ print('example of alignCT with  fan-beam data')
 # 1. simulate data
 # ----------------
 
+# simulate 2D phantom
+size = 1024
+foam = alignct.simulate_foam_vol(size, 1, 1, 0.2, 500)[0]
+plt.figure(0); plt.imshow(foam) 
 
-# simulated misalignment values
+# simulated misalignment value
 # h_opt: in pixels, the horizontal shift value of the detector to be estimated
 
 h_opt = 10
 
 # fan-beam configuration, all in mm
 
-data, sod, sdd, rot_step, pixel = alignct.simulate_foam_fan(1024, 1024, h_opt)
+data, sod, sdd, rot_step, pixel = alignct.simulate_foam_fan(foam, size, size, h_opt)
 voxel = 1
 rows, angles = data.shape
 
@@ -37,7 +41,7 @@ plt.figure(1); plt.imshow(data)
 
 
 # -------------
-# 1. *** shifts
+# 2. shifts
 # -------------
 
     

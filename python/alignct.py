@@ -14,17 +14,11 @@ import matplotlib.pyplot as plt
 
 def simulate_foam_vol(size, size_y, seed, rmax, nballs):
 
+    # simulate foam phantom with foam_ct_phantom
+    
     import foam_ct_phantom as pht
 
-    #first lot of features version
-    #pht.FoamPhantom.generate('phantom.h5', 1, 1000, 100, 0.3, 2) #seed,nballs,ntrials,rmax,zmax
     pht.FoamPhantom.generate('phantom.h5', seed, nballs, 10, rmax, 2)   #p_1
-    #few features
-    #pht.FoamPhantom.generate('phantom.h5', 1, 2000, 100, 0.05, 2)
-    #pht.FoamPhantom.generate('phantom.h5', 1, 10000, 10, 0.01, 2)
-    #pht.FoamPhantom.generate('phantom.h5', 1, 5000, 10, 0.03, 2)   #p_2
-
-
     
     phantom = pht.FoamPhantom('phantom.h5')
     geo = pht.VolumeGeometry(size, size, size_y, 3/size)
@@ -34,11 +28,9 @@ def simulate_foam_vol(size, size_y, seed, rmax, nballs):
     return vol
 
 
-def simulate_foam_fan(size, size_angles, shx):
+def simulate_foam_fan(phantom, size, size_angles, shx):
 
-    foam = simulate_foam_vol(size, 1, 1, 0.2, 500)[0]
-    plt.figure(0); plt.imshow(foam) 
-
+    # simulate misalignrs fan-feam projections of a given phantom
     
     magn = 1
     src_ori = size * 2  # remember: src_ori > size 
@@ -48,7 +40,7 @@ def simulate_foam_fan(size, size_angles, shx):
     fan_geom = astra.create_proj_geom('fanflat', magn, size, angles, src_ori, ori_det)
     vol_geom = astra.create_vol_geom(size, size)
     proj_id = astra.creators.create_projector('line_fanflat', fan_geom, vol_geom)
-    _, projs = astra.create_sino(foam, proj_id)
+    _, projs = astra.create_sino(phantom, proj_id)
 
 
     # misaligment
