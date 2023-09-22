@@ -7,9 +7,12 @@
 import numpy
 from scipy.interpolate import RegularGridInterpolator as RGI, RectBivariateSpline as RBS
 from skimage.registration import phase_cross_correlation as pcc
+from skimage.transform import rotate
 import astra
 from numpy.fft import fftshift as SHFT
 import matplotlib.pyplot as plt
+import multiprocessing as mp
+from multiprocessing.pool import ThreadPool
 
 
 def simulate_foam_vol(size, size_y, seed, rmax, nballs):
@@ -30,7 +33,7 @@ def simulate_foam_vol(size, size_y, seed, rmax, nballs):
 
 def simulate_foam_fan(phantom, size, size_angles, shx):
 
-    # simulate misalignrs fan-feam projections of a given phantom
+    # simulate misaligned fan-feam projections of a given phaom
     
     magn = 1
     src_ori = size * 2  # remember: src_ori > size 
@@ -49,11 +52,44 @@ def simulate_foam_fan(phantom, size, size_angles, shx):
     return projs, src_ori, src_ori+ori_det, (angles[0]-angles[1])*180/numpy.pi, magn
 
 
+def simulate_foam(phantom, size, size_y, size_angles, shx, shy, tilt):
+
+    # simulate misaligned cone-beam projections
+    
+    magn = 1
+    src_ori = size * 2  # remember: src_ori > size 
+    ori_det = src_ori * (magn-1)
+    angles = numpy.linspace(0, 2*numpy.pi, size_angles, endpoint = False)
+    cone_geo = astra.create_proj_geom('cone', magn, magn, size_y, size, angles, src_ori, ori_det)
+    vol_geom = astra.create_vol_geom(size, size, size_y) 
+    _, projs = astra.create_sino3d_gpu(phantom, cone_geo, vol_geom)
+    projs = numpy.flip(projs, axis = 1)
+
+   
+    # rotations
+    if tilt != 0:
+        def rot(frame):
+            # tilt in degrees
+            projs[:,frame,:] = rotate(projs[:,frame,:], tilt)
+    
+        pool = ThreadPool(mp.cpu_count() - 10)
+        pool.map(rot, numpy.arange(size_angles))
+        pool.close()
+
+
+    # horizontal shifts
+    projs = numpy.roll(projs, shx, axis = 2)
+ 
+
+    return projs, src_ori, src_ori+ori_det, (angles[1]-angles[0])*180/numpy.pi, magn
+
+ 
 
 
 def vectors_astra(pixel, voxel, sod, sdd, rot_step, angles, det_x, det_y, eta, theta, phi):
 
-    # eta theta phi in degrees
+    # define geometry for astra
+    # angles in degrees
     
     pixel /= voxel 
     angles_seq = (numpy.arange(angles) * rot_step) * numpy.pi / 180 
@@ -137,7 +173,7 @@ def reconstruct_astra(proj_id, vol_id):
 
 def fanrec_astra(g, shift_x, sod, sdd, pixel, voxel, rot_step):
 
-    # fanbeam astra gives noisy recons
+    # fanbeam astra FBP reconstructions
     
     if len(g.shape) == 3:
         g = g[g.shape[0]//2 - 1]*0 + g[g.shape[0]//2]
@@ -224,9 +260,9 @@ def fanrec_astra(g, shift_x, sod, sdd, pixel, voxel, rot_step):
 
 def shift2D_FP(g, sod, sdd, pixel, rot_step, b0, shift_0 = 0, iters = 5):
 
-    # x shift of the center of rotation in mm
-    # based on fanbeam symmetry relantionship
-    # g can be fan or conebeam
+    # x shift of the center of rotation fro fan-beam
+    # based on fan-beam symmetry relantionship
+    # algorithm FP in the paper
 
     if len(g.shape) == 3:
         g = g[g.shape[0]//2 - 1]*0 + g[g.shape[0]//2]
@@ -262,6 +298,8 @@ def shift2D_FP(g, sod, sdd, pixel, rot_step, b0, shift_0 = 0, iters = 5):
 
 def shifts2D_FPK(g, sod, sdd, pixel, rot_step, shift_0 = 0, iters = 5, K = 10):
 
+    # algorithm FP_K in the paper, for fanbeam 
+    
     angles, _  = g.shape
     a_samp = numpy.arange(K) * angles//K
     shift_fp = numpy.zeros(K)
@@ -274,7 +312,7 @@ def shift2D_2DR(g, sod, sdd, pixel, rot_step):
 
     # x shift of the center of rotation in mm
     # based on fanbeam symmetry relantionship
-    # g can be fan or conebeam
+    # algorith 2DR, for fan-beam
 
     if len(g.shape) == 3:
         g = g[g.shape[0]//2 - 1]*0 + g[g.shape[0]//2]
@@ -304,8 +342,6 @@ def shift2D_2DR(g, sod, sdd, pixel, rot_step):
     shifts = pcc(g, f2, upsample_factor = upsampling, normalization = None)[0] * pixel * 0.5       
 
     return shifts[1]  # this is in mm
-
-
 
 
 
@@ -358,6 +394,8 @@ def shift2D_LY(g, sod, sdd, pixel, rot_step):
 
 def shift2D_yang(g, pixel):
 
+    # yang method
+    
     if len(g.shape) == 3:
         g = g[g.shape[0]//2 - 1] + g[g.shape[0]//2]
 
@@ -422,8 +460,7 @@ def loss_fan(g, sod, sdd, pixel, rot_step, shift_x, fig):
     f = g - f2
     f_norm = 100 * (f*f).sum() / (g*g).sum()  # / pixels / angles 
 
-    #plt.figure(fig); plt.plot(g[0]); plt.plot(f2[0])
-    #print('shift, norm', numpy.around(shift_x), f_norm)
+
 
     return f_norm #f, f_norm
 
@@ -433,12 +470,11 @@ def loss_fan(g, sod, sdd, pixel, rot_step, shift_x, fig):
 
 def loss_cone_tilt(interp3d, interp2d, sod, sdd, s, shx, shy, tilt, b0):
 
+    # loss function for tilted fan in cone-beam projections
+
     magn_i = sod / sdd
     stilt = numpy.sin(tilt)
     ctilt = numpy.cos(tilt)
-
-    #shx = shift_x * magn_i
-    #shy = shift_y * magn_i
   
     f1 = interp2d((-(s) * stilt, (s) * ctilt ))
 
@@ -447,31 +483,12 @@ def loss_cone_tilt(interp3d, interp2d, sod, sdd, s, shx, shy, tilt, b0):
     beta_s[mask] -= 2*numpy.pi
     f2 = interp3d(((s-2*shx) * stilt, beta_s, (-s+2*shx) * ctilt))  
 
-    # this is per slice, no interpolation
-    #interpolator = interpolate.RectBivariateSpline(beta, s-shx, cone[shift_y], kx = 3, ky = 3)
-    #f1 = interpolator(0, s-shx, grid = False)
-    #f2 = interpolator(2*numpy.arctan2(s-shx, sod) + numpy.pi, -s+shx, grid = False)
 
     f = f1 - f2
-    norm = (f*f).sum() * (s[1]-s[0])  #* 1E6 / (f1*f1).sum()
+    norm = (f*f).sum() * (s[1]-s[0])  
 
-    #print(shift_x, norm)
-    #plt.plot(f1)
-    #plt.plot(f2)
-    #plt.show(); exit()
-    
-    '''upsampling = 10
-    ls = len(s)
-    pad = ls // 2 * int(upsampling-1)
-    f1 = numpy.fft.rfft(f1).conjugate()
-    xcorr = numpy.fft.irfft(numpy.pad((numpy.fft.rfft(f2) * f1),(0,pad)))
-    shift = (numpy.argmax(numpy.fft.fftshift(xcorr)) - ls*upsampling/2) #/ upsampling #* pixel
-    shift *= shift'''
-    
-    #print('shift', shift, shift_x, shift_y, tilt)
-    #print('norm', norm, shift_x, shift_y, tilt) ; exit()
               
-    return norm  #f, norm
+    return norm  
 
 
 
@@ -481,7 +498,7 @@ def cone_sampling(cone, sod, sdd, pixel, rot_step):
     cols, angles, pixels = cone.shape
     magn_i = sod / sdd
 
-    cs = cols // 4  #cropped columns
+    cs = cols // 4  
     c0 = cols // 2 - cs // 2 
     
     s_M = (pixels * pixel * magn_i - 1) * 0.5
@@ -523,11 +540,12 @@ def cone_interpolator3D_tilt(cone, sampling, order):
 
 
 
-def shift_x_tiltedfan(interp3d, interp2d, sod, sdd, s, pixel, tilt, b0, shx = 0, iters = 5):
+def shift3D_FP(interp3d, interp2d, sod, sdd, s, pixel, tilt, b0, shx = 0, iters = 5):
 
     # x shift of the center of rotation in mm
     # based on fanbeam symmetry relantionship
     # on a tilted fan
+    # for cone-beam, algorithm FP
 
 
     magn_i = sod / sdd
@@ -560,22 +578,37 @@ def shift_x_tiltedfan(interp3d, interp2d, sod, sdd, s, pixel, tilt, b0, shx = 0,
 
 
 
-def shift_x_fpK(data, interp3d, sod, sdd, sampling, pixel, tilt, shx0 = 0, iters = 5):
+def shift3D_FPK(data, interp3d, sod, sdd, sampling, pixel, tilt, shx0 = 0, iters = 5):
+
+    # for cone-beam, algorithm FP_K
 
     s = sampling[7]
     angles = sampling[1]
+    cols = sampling[0]
+    
     angs = 10
     a_samp = numpy.arange(angs) * angles//angs
     shx = numpy.zeros(angs)
+    
     for a in numpy.arange(angs):
         interp2d, b0 = cone_interpolator2D_tilt(data, sampling, 'linear', a_samp[a])
-        shx[a] = shift_x_tiltedfan(interp3d,interp2d,sod,sdd,s,pixel,tilt,b0,shx0,iters=iters)
-    return shx
+        shx[a] = shift3D_FP(interp3d,interp2d,sod,sdd,s,pixel,tilt,b0,shx0,iters=iters)
+
+    stilt_s = s * numpy.sin(tilt)
+    ctilt_s = s * numpy.cos(tilt)
+    f1 = numpy.zeros((angles, cols))
+    for b in numpy.arange(angles):
+
+        interp2d, b0 = cone_interpolator2D_tilt(data, sampling, 'linear', b)
+        f1[b] = interp2d((-stilt_s, ctilt_s))
+        
+    return shx, f1
 
 
 
-def shift_x_2d3d(data, interp3d, sod, magn_i, sampling, pixel, tilt):
+def shift3D_2DR(data, interp3d, sod, magn_i, sampling, pixel, tilt):
 
+     # for cone-beam, algorithm 2DR
 
     s = sampling[7]
     angles = sampling[1]
@@ -603,9 +636,7 @@ def shift_x_2d3d(data, interp3d, sod, magn_i, sampling, pixel, tilt):
         beta_s[mask] -= twopi
         
         f2[b] = interp3d((stilt_s, beta_s, -ctilt_s))
-                
-    #plt.figure(2); plt.imshow(f2); plt.show(); exit()
-    #plt.figure(12); plt.plot(g[0]); plt.plot(f2[0])
+ 
 
     shifts = pcc(f1, f2, upsample_factor = upsampling, normalization = None)[0] * pixel * 0.5 * magn_i      
 
@@ -615,23 +646,23 @@ def shift_x_2d3d(data, interp3d, sod, magn_i, sampling, pixel, tilt):
 
 
 
-def onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, tilt, shiftx, sdd):
+def onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, tilt, shiftx, sdd, alg):
 
-     
+
+    # reduced loss function on eta
+    # to be minimized with gradient descent
+    
     cols, angles, pixels, magn_i, c0, cs, beta, s, sc, grid2d, _ = sampling
     
     twopi = 2*numpy.pi
     shiftx *= magn_i
 
+    if alg == 'FPK':
+        shx, f1s = shift3D_FPK(data, interp3d, sod, sdd, sampling, pixel, tilt, shiftx)
+        shx = numpy.median(shx) 
 
-    shx = shift_x_fpK(data, interp3d, sod, sdd, sampling, pixel, tilt, shiftx, iters = 5)
-
-    #shx0 = shx[0]
-    #shx = numpy.median(shx)
-    
-    shx, f1s = shift_x_2d3d(data, interp3d, sod, magn_i, sampling, pixel, tilt)
-
-    #print(shx, ss)
+    if alg == '2DR':
+        shx, f1s = shift3D_2DR(data, interp3d, sod, magn_i, sampling, pixel, tilt)
     
     fs = numpy.zeros((angles, cols))
 
@@ -662,10 +693,11 @@ def onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, tilt, shiftx,
 
 
 
-def tilt_GD(data, sod, sdd, pixel, rot_step, shiftx):
+def tilt_VP(data, sod, sdd, pixel, rot_step, shiftx, alg):
 
-
-
+    # estimation of rotation (eta) parameter via variable projection
+    # this is gradient descent for the reduced problem on eta
+    
     sampling = cone_sampling(data, sod, sdd, pixel, rot_step)    
 
     c0 = sampling[4]
@@ -683,10 +715,10 @@ def tilt_GD(data, sod, sdd, pixel, rot_step, shiftx):
     gamma = 1e-4  # radians
     bound = 0.02 # radians
 
-    for k in numpy.arange(n_GD):  # GD
+    for k in numpy.arange(n_GD):  # gradient descent
         
-        lossGD = onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, eta, shiftx, sdd)
-        lossFD = onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, eta-1e-3, shiftx, sdd)
+        lossGD = onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, eta, shiftx, sdd, alg)
+        lossFD = onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, eta-1e-3, shiftx, sdd, alg)
         lossLS = lossGD + 0
         grad = (lossGD-lossFD)*1e3
         #print(grad, eta)
@@ -694,23 +726,23 @@ def tilt_GD(data, sod, sdd, pixel, rot_step, shiftx):
         if abs(grad) * gamma >= bound : gamma = bound / abs(grad)  # bound constraint
         
         etaGD = eta + 0
-        for l in numpy.arange(n_LS):  # backtracking LS
+        for l in numpy.arange(n_LS):  # backtracking Armijo line-search 
 
             gg = grad * gamma
             if abs(gg) < 1e-4 :
-                print('lossLS', lossLS, 'grad', grad)
+                #print('lossLS', lossLS, 'grad', grad)
                 return eta
             
             eta -= gg
-            lossLS = onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, eta, shiftx, sdd)
+            lossLS = onlyloss(data, gmax, sod, pixel, rot_step, sampling, interp3d, eta, shiftx, sdd, alg)
             #print(eta*180/numpy.pi, lossLS, lossGD - c*gg**2)
 
             if lossLS <= lossGD - c*gg*grad :
-                print('break', l)
+                #print('break', l)
                 break
 
             if l+1 == n_LS :
-                print('lossGD', lossGD, 'grad', grad)
+                #print('lossGD', lossGD, 'grad', grad)
                 return eta
             
             eta = etaGD + 0
@@ -718,7 +750,7 @@ def tilt_GD(data, sod, sdd, pixel, rot_step, shiftx):
 
         #print('break', n_LS)
         diff = abs(etaGD - eta)
-        print('diff', diff)
+        #print('diff', diff)
         if diff < 1e-4: break 
 
     print('lossLS', lossLS, 'grad', grad)
