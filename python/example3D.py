@@ -17,7 +17,7 @@ print('example of alignCT with cone-beam data')
 
 # algorithm for projected problem (on h),
 # options: 'FPK' (fixed point_K), '2DR' (2D sinogram registration) 
-alg = '2DR'
+alg = 'FPK'
 print('inner algorithm for h:', alg)
 
 # ----------------
@@ -25,7 +25,7 @@ print('inner algorithm for h:', alg)
 # ----------------
 
 # simulate 3D phantom
-size = 512
+size = 1024
 phantom = alignct.simulate_foam_vol(size, size, 1, 0.2, 500)
 plt.figure(0); plt.imshow(phantom[0]); plt.title('phantom, slice 0')
 
