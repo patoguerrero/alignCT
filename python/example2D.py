@@ -1,7 +1,7 @@
 # example of alignCT with (simulated) fan-beam (2D) data
 # Patricio Guerrero
 # KU Leuven
-# patrico.guerrero@kuleuven.be
+# patricio.guerrero@kuleuven.be
 
 
 import alignct
